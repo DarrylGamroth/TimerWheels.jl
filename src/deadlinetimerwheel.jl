@@ -32,6 +32,10 @@ especially timers scheduled far in the future that span multiple wheel rotations
 applications (e.g., nanosecond-resolution timers polled every microsecond). Frequent 
 polling ensures both correctness and optimal performance.
 
+**⏱️ Real-Time Systems:** The `expiry_limit` parameter enables bounded execution time 
+per poll call. The wheel maintains state (`poll_index`) to resume processing exactly 
+where it left off, ensuring no timers are missed even when hitting expiry limits.
+
 ## Caveats
 
 Timers that expire in the same tick are not ordered with one another. As ticks are
@@ -49,7 +53,7 @@ fairly coarse resolution normally, this means that some timers may expire out of
 - `tick_resolution::Int64`: Resolution of a tick in time units
 - `tick_allocation::Int32`: Space allocated per tick of the wheel
 - `allocation_bits_to_shift::Int32`: Number of bits to shift for allocation
-- `poll_index::Int32`: Current polling index within a tick
+- `poll_index::Int32`: Current polling index within a tick (for resuming across poll calls)
 - `wheel::Vector{Int64}`: The wheel array storing timer deadlines
 """
 mutable struct DeadlineTimerWheel
@@ -256,17 +260,19 @@ end
 
 Poll for timers expired by the deadline passing.
 
-This implementation uses the original fast algorithm that processes ticks incrementally
-from the last processed tick to the current tick. 
+This implementation uses an incremental algorithm that processes timers slot-by-slot,
+maintaining state (`poll_index`) to resume exactly where it left off across poll calls.
+This ensures bounded execution time when using `expiry_limit`, making it suitable for
+real-time systems with strict timing requirements.
 
 **CRITICAL:** For correctness with timers that span multiple wheel rotations, 
 **applications MUST poll frequently** - ideally at intervals ≤ `tick_resolution`. 
 Large time jumps between polls (greater than `ticks_per_wheel * tick_resolution`) 
 may cause some timers to be missed.
 
-**Performance Recommendation:** Poll every `tick_resolution` (or faster) for optimal 
-performance and correctness. This algorithm is optimized for high-frequency polling 
-applications and avoids expensive comprehensive scans.
+**Real-Time Usage:** Use `expiry_limit` to bound the number of timers processed per 
+poll call. The wheel will automatically resume from where it left off on the next 
+poll, ensuring no timers are missed while maintaining predictable execution time.
 
 # Arguments
 - `handler::AbstractTimerHandler`: Handler to call for each expired timer
@@ -298,21 +304,31 @@ function poll(t::DeadlineTimerWheel,
     target_tick = max(target_tick, t.current_tick)
     
     # POLLING FREQUENCY CHECK: Detect if we're polling too slowly
+    # This check is important even with no timers - validates polling pattern
     tick_jump = target_tick - t.current_tick
     max_safe_jump = t.ticks_per_wheel
     
     @assert tick_jump <= max_safe_jump "Polling too slowly: jumped $tick_jump ticks (max safe: $max_safe_jump). Poll more frequently!"
     
-    # ORIGINAL FAST ALGORITHM ONLY
-    # Process ticks from current_tick to target_tick
-    # For correctness, ensure polling frequency ≤ tick_resolution to avoid large jumps
+    # Early exit if no timers to process
+    if t.timer_count <= 0
+        # Advance time but no timers to process
+        t.current_tick = target_tick
+        t.poll_index = 0
+        return 0
+    end
+    
+    # REAL-TIME FRIENDLY ALGORITHM WITH poll_index
+    # Process timers incrementally, respecting expiry_limit for bounded execution time
     while t.current_tick <= target_tick && timers_expired < expiry_limit
         spoke_index = t.current_tick & t.tick_mask
         
-        # Process all timers in the current tick
-        for slot_index in 0:t.tick_allocation-1
+        # Resume processing from poll_index within the current tick
+        for slot_index in t.poll_index:t.tick_allocation-1
             if timers_expired >= expiry_limit
-                break
+                # Hit expiry limit - save our position and return
+                t.poll_index = slot_index
+                return timers_expired
             end
             
             wheel_index = (spoke_index << t.allocation_bits_to_shift) + slot_index + 1
@@ -328,17 +344,16 @@ function poll(t::DeadlineTimerWheel,
                     # Handler rejected the timer expiry, restore it and stop processing
                     t.wheel[wheel_index] = deadline
                     t.timer_count += 1
+                    t.poll_index = slot_index + 1
                     return timers_expired - 1
                 end
             end
         end
         
-        # Move to the next tick
+        # Finished processing all slots in current tick - advance to next tick
         t.current_tick += 1
+        t.poll_index = 0
     end
-    
-    # Reset poll_index since we've processed complete ticks
-    t.poll_index = 0
     
     return timers_expired
 end

@@ -1,7 +1,7 @@
 name = "TimerWheels"
 uuid = "aebde43d-366d-4353-b020-04442e269197"
 authors = ["Darryl Gamroth <dgamroth@rubus.ca>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 FunctionWrappers = "069b7b12-0de2-55c6-9aab-29f3d0a68a2e"
