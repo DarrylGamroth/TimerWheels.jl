@@ -256,7 +256,7 @@ function cancel_timer!(t::DeadlineTimerWheel, timer_id)
 end
 
 """
-    poll(wheel::DeadlineTimerWheel, handler::AbstractTimerHandler, now::Int64, expiry_limit::Int64=typemax(Int64)) -> Int64
+    poll(callback, wheel::DeadlineTimerWheel, now::Int64, clientd=nothing; expiry_limit::Int64=typemax(Int64)) -> Int64
 
 Poll for timers expired by the deadline passing.
 
@@ -275,24 +275,36 @@ poll call. The wheel will automatically resume from where it left off on the nex
 poll, ensuring no timers are missed while maintaining predictable execution time.
 
 # Arguments
-- `handler::AbstractTimerHandler`: Handler to call for each expired timer
+- `callback`: Function to call for each expired timer with signature `(clientd, now, timer_id) -> Bool`
+- `wheel::DeadlineTimerWheel`: The timer wheel to poll
 - `now::Int64`: Current time to compare deadlines against
+- `clientd`: Client data to pass to the callback function (default: nothing)
 - `expiry_limit::Int64`: Maximum number of timers to process in one poll operation (default: no limit)
 
 # Returns
 Count of expired timers as a result of this poll operation
 
-# Handler Callback
-The handler's `on_expiry` function will be called for each expired timer with:
-- `client`: User-provided client data from the handler
+# Callback Function
+The callback function will be called for each expired timer with:
+- `clientd`: User-provided client data
 - `now`: Current time when the timer expired  
 - `timer_id`: ID of the expired timer
 
-The handler should return `true` to consume the timer, or `false` to keep the timer active and abort further polling.
+The callback should return `true` to consume the timer, or `false` to keep the timer active and abort further polling.
+
+# Example
+```julia
+expired_timers = Int64[]
+count = poll(wheel, now, expired_timers) do client, now, timer_id
+    push!(client, timer_id)
+    return true
+end
+```
 """
-function poll(t::DeadlineTimerWheel,
-    handler::AbstractTimerHandler,
+function poll(callback,
+    t::DeadlineTimerWheel,
     now::Int64,
+    clientd=nothing;
     expiry_limit::Int64=typemax(Int64))
 
     timers_expired = 0
@@ -340,8 +352,8 @@ function poll(t::DeadlineTimerWheel,
                 timers_expired += 1
                 
                 timer_id = timer_id_for_slot(spoke_index, slot_index)
-                if !handler.on_expiry(handler.clientd, now, timer_id)
-                    # Handler rejected the timer expiry, restore it and stop processing
+                if !callback(clientd, now, timer_id)
+                    # Callback rejected the timer expiry, restore it and stop processing
                     t.wheel[wheel_index] = deadline
                     t.timer_count += 1
                     t.poll_index = slot_index + 1

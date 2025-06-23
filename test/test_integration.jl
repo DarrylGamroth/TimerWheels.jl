@@ -7,11 +7,6 @@
         # Track timer events
         events = Vector{Tuple{String, Int64, Int64}}()  # (event_type, time, timer_id)
         
-        handler = TimerHandler(events) do client, now, timer_id
-            push!(client, ("expired", now, timer_id))
-            return true
-        end
-        
         # Schedule multiple timers at different times
         timer1 = schedule_timer!(wheel, 100)  # Expires at 100ms
         timer2 = schedule_timer!(wheel, 200)  # Expires at 200ms
@@ -31,13 +26,22 @@
         @test timer_count(wheel) == 3
         
         # Poll at different times
-        expired_count = poll(wheel, handler, 120)
+        expired_count = poll(wheel, 120, events) do client, now, timer_id
+            push!(client, ("expired", now, timer_id))
+            return true
+        end
         @test expired_count >= 0
         
-        expired_count = poll(wheel, handler, 180)
+        expired_count = poll(wheel, 180, events) do client, now, timer_id
+            push!(client, ("expired", now, timer_id))
+            return true
+        end
         @test expired_count >= 0
         
-        expired_count = poll(wheel, handler, 350)
+        expired_count = poll(wheel, 350, events) do client, now, timer_id
+            push!(client, ("expired", now, timer_id))
+            return true
+        end
         @test expired_count >= 0
         
         # Verify events occurred in correct order
@@ -133,7 +137,13 @@
         context = TimerContext(Set{Int64}(), 0, 3, true)
         
         # Handler with complex logic
-        handler = TimerHandler(context) do ctx, now, timer_id
+        # Schedule several timers
+        for i in 1:10
+            schedule_timer!(wheel, 1050)
+        end
+        
+        initial_count = timer_count(wheel)
+        expired_count = poll(wheel, 1100, context) do ctx, now, timer_id
             if !ctx.should_continue
                 return false
             end
@@ -151,14 +161,6 @@
             # Reschedule timer with 50% probability
             return rand() < 0.5
         end
-        
-        # Schedule several timers
-        for i in 1:10
-            schedule_timer!(wheel, 1050)
-        end
-        
-        initial_count = timer_count(wheel)
-        expired_count = poll(wheel, handler, 1100)
         
         @test expired_count >= 0
         @test length(context.processed_timers) >= 0

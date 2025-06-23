@@ -85,10 +85,9 @@
                 
                 # Poll
                 if i % 3 == 0
-                    handler = TimerHandler(nothing) do client, now, timer_id
+                    poll(wheel, 1000 + i*10, nothing) do client, now, timer_id
                         return true
                     end
-                    poll(wheel, handler, 1000 + i*10)
                 end
             end
             
@@ -101,33 +100,27 @@
         @testset "Handler Exceptions" begin
             wheel = DeadlineTimerWheel(1000, 8, 8)
             
-            # Handler that throws an exception
-            error_handler = TimerHandler(nothing) do client, now, timer_id
-                throw(ErrorException("Handler error"))
-            end
-            
             # Schedule a timer for the first tick
             timer_id = schedule_timer!(wheel, 1000)  # Will be placed in tick 0
             
             # Poll at time that will advance to next tick and expire the timer
-            @test_throws ErrorException poll(wheel, error_handler, 1008)
+            @test_throws ErrorException poll(wheel, 1008, nothing) do client, now, timer_id
+                throw(ErrorException("Handler error"))
+            end
         end
         
         @testset "Handler State Corruption" begin
             wheel = DeadlineTimerWheel(1000, 8, 8)
             
-            # Handler that modifies wheel state during callback
-            corrupting_handler = TimerHandler(wheel) do client, now, timer_id
-                # Try to schedule another timer during callback
-                schedule_timer!(client, now + 100)
-                return true
-            end
-            
             timer_id = schedule_timer!(wheel, 1000)  # Will be placed in tick 0
             initial_count = timer_count(wheel)
             
             # Poll at time that will expire the timer
-            poll(wheel, corrupting_handler, 1008)
+            poll(wheel, 1008, wheel) do client, now, timer_id
+                # Try to schedule another timer during callback
+                schedule_timer!(client, now + 100)
+                return true
+            end
             
             # Timer count should have changed (one expired, one added)
             @test timer_count(wheel) >= initial_count  # Should have at least the new timer
@@ -144,10 +137,9 @@
             @test deadline(wheel, timer_id) == -500
             
             # Poll with negative current time
-            handler = TimerHandler(nothing) do client, now, timer_id
+            expired_count = poll(wheel, -400, nothing) do client, now, timer_id
                 return true
             end
-            expired_count = poll(wheel, handler, -400)
             @test expired_count >= 0
         end
         

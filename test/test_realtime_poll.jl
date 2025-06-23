@@ -19,10 +19,6 @@
         
         # Create handler that tracks expired timers
         expired_timers = Int64[]
-        handler = TimerHandler(expired_timers) do client, now, timer_id
-            push!(client, timer_id)
-            return true
-        end
         
         # Poll with strict expiry limit
         poll_time = expire_time + 1000  # Poll after all should expire
@@ -33,7 +29,10 @@
         # Keep polling until all timers are processed
         while timer_count(wheel) > 0 && poll_calls < 20  # Safety limit
             poll_calls += 1
-            expired_count = poll(wheel, handler, poll_time, expiry_limit)
+            expired_count = poll(wheel, poll_time, expired_timers; expiry_limit=expiry_limit) do client, now, timer_id
+                push!(client, timer_id)
+                return true
+            end
             total_expired += expired_count
             
             # Should never exceed expiry limit
@@ -75,22 +74,24 @@
         
         # Handler that tracks processing order
         processing_order = Int64[]
-        handler = TimerHandler(processing_order) do client, now, timer_id
-            push!(client, timer_id)
-            return true
-        end
         
         # Poll with very small expiry limit to force multiple calls
         poll_time = expire_time + 100
         expiry_limit = 3
         
         # First poll - should process exactly 3 timers
-        expired1 = poll(wheel, handler, poll_time, expiry_limit)
+        expired1 = poll(wheel, poll_time, processing_order; expiry_limit=expiry_limit) do client, now, timer_id
+            push!(client, timer_id)
+            return true
+        end
         @test expired1 == 3
         @test timer_count(wheel) == num_timers - 3
         
         # Second poll - should continue from where we left off
-        expired2 = poll(wheel, handler, poll_time, expiry_limit)
+        expired2 = poll(wheel, poll_time, processing_order; expiry_limit=expiry_limit) do client, now, timer_id
+            push!(client, timer_id)
+            return true
+        end
         @test expired2 == 3
         @test timer_count(wheel) == num_timers - 6
         
@@ -103,7 +104,10 @@
         total_polls = 2
         while timer_count(wheel) > 0 && total_polls < 10
             total_polls += 1
-            expired = poll(wheel, handler, poll_time, expiry_limit)
+            expired = poll(wheel, poll_time, processing_order; expiry_limit=expiry_limit) do client, now, timer_id
+                push!(client, timer_id)
+                return true
+            end
             @test expired <= expiry_limit
         end
         
@@ -122,19 +126,15 @@
             schedule_timer!(wheel, expire_time)
         end
         
-        # Handler that rejects every 3rd timer
-        rejected_count = 0
-        handler = TimerHandler(nothing) do client, now, timer_id
+        # Poll with expiry limit
+        poll_time = expire_time + 100
+        initial_count = timer_count(wheel)
+        expired = poll(wheel, poll_time, nothing; expiry_limit=5) do client, now, timer_id
             if (timer_id % 3) == 0
                 return false  # Reject this timer
             end
             return true  # Accept this timer
         end
-        
-        # Poll with expiry limit
-        poll_time = expire_time + 100
-        initial_count = timer_count(wheel)
-        expired = poll(wheel, handler, poll_time, 5)
         
         # Should have processed some timers but not necessarily all
         @test expired >= 0
@@ -151,13 +151,11 @@
         
         @test timer_count(wheel) == 0
         
-        handler = TimerHandler(nothing) do client, now, timer_id
-            return true
-        end
-        
         # Poll empty wheel with various expiry limits
         for limit in [1, 10, 100]
-            expired = poll(wheel, handler, start_time + 1000, limit)
+            expired = poll(wheel, start_time + 1000, nothing; expiry_limit=limit) do client, now, timer_id
+                return true
+            end
             @test expired == 0
             @test timer_count(wheel) == 0
         end
@@ -174,13 +172,11 @@
         # Schedule a timer for later
         timer_id = schedule_timer!(wheel, start_time + 10240)  # 10 ticks later
         
-        handler = TimerHandler(nothing) do client, now, timer_id
-            return true
-        end
-        
         # Poll at an intermediate time with expiry limit
         intermediate_time = start_time + 5120  # 5 ticks later
-        expired = poll(wheel, handler, intermediate_time, 5)
+        expired = poll(wheel, intermediate_time, nothing; expiry_limit=5) do client, now, timer_id
+            return true
+        end
         
         # Time should advance even with expiry limit
         @test wheel.current_tick >= 5
@@ -189,7 +185,9 @@
         
         # Poll at expiry time
         expiry_time = start_time + 11264  # Past the timer deadline
-        expired = poll(wheel, handler, expiry_time, 5)
+        expired = poll(wheel, expiry_time, nothing; expiry_limit=5) do client, now, timer_id
+            return true
+        end
         
         @test expired == 1
         @test timer_count(wheel) == 0

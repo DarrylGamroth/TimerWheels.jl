@@ -66,16 +66,15 @@ using TimerWheels
             
             # Create handler that just counts
             expired_count = 0
-            handler = TimerHandler(nothing) do client, now, timer_id
-                expired_count += 1
-                return true
-            end
             
             # Jump far forward in time
             jump_time = num_timers * 10 + 1000
             start_time = time_ns()
             
-            poll_result = poll(wheel, handler, jump_time)
+            poll_result = poll(wheel, jump_time, nothing) do client, now, timer_id
+                expired_count += 1
+                return true
+            end
             
             poll_time = time_ns() - start_time
             
@@ -99,17 +98,16 @@ using TimerWheels
             end
             
             expired_total = 0
-            handler = TimerHandler(nothing) do client, now, timer_id
-                expired_total += 1
-                return true
-            end
             
             # Many small incremental polls
             poll_count = 100
             start_time = time_ns()
             
             for i in 1:poll_count
-                poll(wheel, handler, i * 100)
+                poll(wheel, i * 100, nothing) do client, now, timer_id
+                    expired_total += 1
+                    return true
+                end
             end
             
             poll_time = time_ns() - start_time
@@ -204,12 +202,10 @@ using TimerWheels
                     end
                     
                 elseif op == 3  # 25% poll operations
-                    handler = TimerHandler(active_timers) do client, now, timer_id
+                    poll(wheel, i * 5, active_timers) do client, now, timer_id
                         delete!(client, timer_id)
                         return true
                     end
-                    
-                    poll(wheel, handler, i * 5)
                 end
             end
             
@@ -241,13 +237,11 @@ using TimerWheels
             
             # Now expire them all at once
             expired_count = 0
-            handler = TimerHandler(nothing) do client, now, timer_id
+            poll_start = time_ns()
+            poll_result = poll(wheel, 100, nothing) do client, now, timer_id
                 expired_count += 1
                 return true
             end
-            
-            poll_start = time_ns()
-            poll_result = poll(wheel, handler, 100)
             poll_time = time_ns() - poll_start
             
             @test poll_result == num_timers
@@ -280,13 +274,12 @@ using TimerWheels
             
             # Poll with very large jump
             expired_count = 0
-            handler = TimerHandler(nothing) do client, now, timer_id
+            
+            poll_start = time_ns()
+            poll_result = poll(wheel, large_deadline + 1000, nothing) do client, now, timer_id
                 expired_count += 1
                 return true
             end
-            
-            poll_start = time_ns()
-            poll_result = poll(wheel, handler, large_deadline + 1000)
             poll_time = time_ns() - poll_start
             
             @test poll_result == num_timers
