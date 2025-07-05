@@ -24,16 +24,16 @@ an array. That array grows when needed, but does not shrink.
 
 ## Important Usage Notes
 
-**⚠️ Polling Frequency:** For correct timer expiration, applications should poll at intervals 
-≤ `tick_resolution`. Large time jumps between polls may cause some timers to be missed, 
+**⚠️ Polling Frequency:** For correct timer expiration, applications should poll at intervals
+≤ `tick_resolution`. Large time jumps between polls may cause some timers to be missed,
 especially timers scheduled far in the future that span multiple wheel rotations.
 
-**📈 Performance:** This implementation prioritizes performance for high-frequency polling 
-applications (e.g., nanosecond-resolution timers polled every microsecond). Frequent 
+**📈 Performance:** This implementation prioritizes performance for high-frequency polling
+applications (e.g., nanosecond-resolution timers polled every microsecond). Frequent
 polling ensures both correctness and optimal performance.
 
-**⏱️ Real-Time Systems:** The `expiry_limit` parameter enables bounded execution time 
-per poll call. The wheel maintains state (`poll_index`) to resume processing exactly 
+**⏱️ Real-Time Systems:** The `expiry_limit` parameter enables bounded execution time
+per poll call. The wheel maintains state (`poll_index`) to resume processing exactly
 where it left off, ensuring no timers are missed even when hitting expiry limits.
 
 ## Caveats
@@ -265,13 +265,13 @@ maintaining state (`poll_index`) to resume exactly where it left off across poll
 This ensures bounded execution time when using `expiry_limit`, making it suitable for
 real-time systems with strict timing requirements.
 
-**CRITICAL:** For correctness with timers that span multiple wheel rotations, 
-**applications MUST poll frequently** - ideally at intervals ≤ `tick_resolution`. 
-Large time jumps between polls (greater than `ticks_per_wheel * tick_resolution`) 
+**CRITICAL:** For correctness with timers that span multiple wheel rotations,
+**applications MUST poll frequently** - ideally at intervals ≤ `tick_resolution`.
+Large time jumps between polls (greater than `ticks_per_wheel * tick_resolution`)
 may cause some timers to be missed.
 
-**Real-Time Usage:** Use `expiry_limit` to bound the number of timers processed per 
-poll call. The wheel will automatically resume from where it left off on the next 
+**Real-Time Usage:** Use `expiry_limit` to bound the number of timers processed per
+poll call. The wheel will automatically resume from where it left off on the next
 poll, ensuring no timers are missed while maintaining predictable execution time.
 
 # Arguments
@@ -287,7 +287,7 @@ Count of expired timers as a result of this poll operation
 # Callback Function
 The callback function will be called for each expired timer with:
 - `clientd`: User-provided client data
-- `now`: Current time when the timer expired  
+- `now`: Current time when the timer expired
 - `timer_id`: ID of the expired timer
 
 The callback should return `true` to consume the timer, or `false` to keep the timer active and abort further polling.
@@ -308,20 +308,29 @@ function poll(callback,
     expiry_limit::Int64=typemax(Int64))
 
     timers_expired = 0
-    
+
     # Calculate the target tick based on current time
     target_tick = (now - t.start_time) >> t.resolution_bits_to_shift
-    
+
     # Ensure we don't go backwards in time
     target_tick = max(target_tick, t.current_tick)
-    
+
     # POLLING FREQUENCY CHECK: Detect if we're polling too slowly
     # This check is important even with no timers - validates polling pattern
     tick_jump = target_tick - t.current_tick
     max_safe_jump = t.ticks_per_wheel
-    
-    @assert tick_jump <= max_safe_jump "Polling too slowly: jumped $tick_jump ticks (max safe: $max_safe_jump). Poll more frequently!"
-    
+
+    if tick_jump > max_safe_jump
+        @warn "Polling too slowly: jumped $tick_jump ticks (max safe: $max_safe_jump). " *
+              "Some timers may have been missed. Resetting to current time and continuing." *
+              " Poll more frequently to avoid this issue!"
+
+        # Automatic recovery: reset current_tick to target_tick and return 0
+        t.current_tick = target_tick
+        t.poll_index = 0
+        return 0
+    end
+
     # Early exit if no timers to process
     if t.timer_count <= 0
         # Advance time but no timers to process
@@ -329,12 +338,12 @@ function poll(callback,
         t.poll_index = 0
         return 0
     end
-    
+
     # REAL-TIME FRIENDLY ALGORITHM WITH poll_index
     # Process timers incrementally, respecting expiry_limit for bounded execution time
     while t.current_tick <= target_tick && timers_expired < expiry_limit
         spoke_index = t.current_tick & t.tick_mask
-        
+
         # Resume processing from poll_index within the current tick
         for slot_index in t.poll_index:t.tick_allocation-1
             if timers_expired >= expiry_limit
@@ -342,15 +351,15 @@ function poll(callback,
                 t.poll_index = slot_index
                 return timers_expired
             end
-            
+
             wheel_index = (spoke_index << t.allocation_bits_to_shift) + slot_index + 1
             deadline = t.wheel[wheel_index]
-            
+
             if deadline != NULL_DEADLINE && now >= deadline
                 t.wheel[wheel_index] = NULL_DEADLINE
                 t.timer_count -= 1
                 timers_expired += 1
-                
+
                 timer_id = timer_id_for_slot(spoke_index, slot_index)
                 if !callback(clientd, now, timer_id)
                     # Callback rejected the timer expiry, restore it and stop processing
@@ -361,12 +370,12 @@ function poll(callback,
                 end
             end
         end
-        
+
         # Finished processing all slots in current tick - advance to next tick
         t.current_tick += 1
         t.poll_index = 0
     end
-    
+
     return timers_expired
 end
 
@@ -455,7 +464,7 @@ timer_id_for_slot(tick_on_wheel, tick_array_index) = (Int64(tick_on_wheel) << 32
 
 Extract the tick (spoke) index from a timer ID.
 
-# Arguments  
+# Arguments
 - `timer_id`: Timer ID to decode
 
 # Returns
@@ -493,7 +502,7 @@ end
 
 Validate that tick resolution is a power of 2.
 
-# Throws  
+# Throws
 - `ArgumentError`: If tick resolution is not a power of 2
 """
 function check_resolution(tick_resolution)
@@ -555,7 +564,9 @@ function Base.iterate(t::DeadlineTimerWheel, state=nothing)
         deadline = t.wheel[index]
         if deadline != NULL_DEADLINE
             i = index - 1
-            timer_id = timer_id_for_slot((i >> t.allocation_bits_to_shift), i & t.tick_mask)
+            spoke_index = i >> t.allocation_bits_to_shift
+            slot_index = i & ((1 << t.allocation_bits_to_shift) - 1)
+            timer_id = timer_id_for_slot(spoke_index, slot_index)
             return ((deadline, timer_id), (index + 1, timers_seen + 1))
         end
     end
