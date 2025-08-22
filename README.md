@@ -1,5 +1,8 @@
 # TimerWheels.jl
 
+[![CI](https://github.com/DarrylGamroth/TimerWheels.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/DarrylGamroth/TimerWheels.jl/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/DarrylGamroth/TimerWheels.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/DarrylGamroth/TimerWheels.jl)
+
 A Julia implementation of a deadline timer wheel data structure for efficient timer scheduling and expiration handling.
 
 ## Overview
