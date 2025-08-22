@@ -3,17 +3,24 @@
 [![CI](https://github.com/DarrylGamroth/TimerWheels.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/DarrylGamroth/TimerWheels.jl/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/DarrylGamroth/TimerWheels.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/DarrylGamroth/TimerWheels.jl)
 
-A Julia implementation of a deadline timer wheel data structure for efficient timer scheduling and expiration handling.
+A Julia implementation of a deadline timer wheel data structure for efficient timer scheduling and expiration handling, **compatible with Java Agrona's DeadlineTimerWheel implementation**.
 
 ## Overview
 
 TimerWheels.jl provides a `DeadlineTimerWheel` that allows you to:
 - Schedule timers with specific deadlines
-- Poll for expired timers efficiently
+- Poll for expired timers efficiently using Java Agrona-compatible algorithm
 - Cancel scheduled timers
 - Handle timer expiration with custom callbacks
 
-The implementation is based on the timer wheel algorithm described in "Hashed and Hierarchical Timing Wheels" by Varghese and Lauck, and follows the design of the Agrona library's DeadlineTimerWheel.
+The implementation follows the Java Agrona `DeadlineTimerWheel` design with identical polling behavior, ensuring compatibility and performance characteristics that match the widely-used Java implementation.
+
+## Key Features
+
+- **Java Agrona Compatibility**: Poll algorithm matches Java Agrona's incremental tick-by-tick processing
+- **Bounded Execution Time**: Each poll call processes a limited number of timers for predictable performance
+- **State Preservation**: Poll state is maintained across calls to resume exactly where the previous poll left off
+- **High Performance**: Optimized for high-frequency polling applications
 
 ## Installation
 
@@ -42,22 +49,47 @@ handler = TimerHandler(nothing) do client, now, timer_id
     return true  # Return true to consume the timer
 end
 
-# Poll for expired timers at current time
-# The timer at 1016 should expire when we poll at 1016 or later
-expired_count = poll(wheel, handler, 1020)
-
-println("$expired_count timers expired")
+# Poll for expired timers - Java Agrona compatible incremental polling
+control_timestamp = 1000
+while timer_count(wheel) > 0
+    expired_count = poll(wheel, handler, control_timestamp)
+    control_timestamp += tick_resolution(wheel)  # Advance by one tick
+end
 ```
 
-## Important: Polling Frequency Requirements
+## Important: Java Agrona Compatible Polling
 
-**For correct timer expiration, applications must poll at intervals ≤ `tick_resolution`.** Large time gaps between polls may cause timers to be missed, particularly those scheduled far in the future that span multiple wheel rotations.
+**This implementation uses the Java Agrona polling algorithm**, which differs from traditional timer wheel implementations:
 
-This implementation is optimized for high-frequency polling applications (e.g., nanosecond-resolution timers polled every microsecond). The algorithm will assert if polling is too infrequent to ensure correctness.
+### Incremental Processing
+- **One tick per poll**: Each poll call processes only the current tick, not multiple ticks
+- **Frequent polling required**: Applications should poll every `tick_resolution` time units
+- **State maintained**: Poll position (`poll_index`) is preserved across calls for bounded execution
 
-**Recommended:** Poll every `tick_resolution` time units or faster for optimal performance and correctness.
+### Recommended Usage Pattern
+```julia
+# Correct: Incremental polling (Java Agrona style)
+control_timestamp = start_time
+while running
+    poll(wheel, handler, control_timestamp)
+    control_timestamp += tick_resolution(wheel)
+    # ... other application logic
+end
+```
 
-### Timer Handler
+### Breaking Change from Traditional Approach
+Unlike traditional timer wheels that process all expired timers in a single large time jump, this implementation requires incremental polling for correctness. **Applications must be updated to poll frequently** to ensure timers expire correctly.
+
+## Performance Characteristics
+
+This implementation provides the same performance characteristics as Java Agrona:
+
+- **Bounded poll time**: Each poll call has predictable execution time
+- **Efficient for high-frequency polling**: Optimized for microsecond-resolution polling
+- **Scalable timer count**: Performance remains consistent with large numbers of timers
+- **Memory efficient**: Dynamic expansion only when needed
+
+## Timer Handler
 
 Timer handlers receive three arguments:
 - `client`: User-provided client data
@@ -74,11 +106,12 @@ Return `true` to consume the timer, or `false` to keep it active and stop pollin
 #### Timer Operations
 - `schedule_timer!(wheel, deadline)` - Schedule a timer, returns timer ID
 - `cancel_timer!(wheel, timer_id)` - Cancel a timer, returns true if successful
-- `poll(wheel, handler, now, expiry_limit=typemax(Int64))` - Poll for expired timers
+- `poll(wheel, handler, now, expiry_limit=typemax(Int64))` - Poll for expired timers (Java Agrona compatible)
 
 #### Utility Functions
 - `timer_count(wheel)` - Number of active timers
 - `current_tick_time(wheel)` - Current tick time
+- `current_tick_time!(wheel, now)` - Manually advance wheel time (matches Java API)
 - `clear!(wheel)` - Remove all timers
 
 #### Timer Information

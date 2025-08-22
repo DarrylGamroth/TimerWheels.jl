@@ -7,11 +7,19 @@
         timer_id = schedule_timer!(wheel, 2048)
         @test timer_count(wheel) == 1
         
-        # Test with simple callback
+        # Test with simple callback - need to poll until timer fires
         expired_timers = Int64[]
-        count = poll(wheel, 2048 + 500, expired_timers) do client, now, timer_id
-            push!(client, timer_id)
-            return true
+        count = 0
+        now = 1000
+        
+        # Poll until timer fires (Java algorithm processes incrementally)
+        while timer_count(wheel) > 0 && now <= 4000
+            expired = poll(wheel, now, expired_timers) do client, now, timer_id
+                push!(client, timer_id)
+                return true
+            end
+            count += expired
+            now += TimerWheels.tick_resolution(wheel)
         end
         
         @test count == 1
@@ -25,9 +33,17 @@
         
         # Test with Int client data
         timer_id = schedule_timer!(wheel, 3000)
-        result = poll(wheel, 3500, 42) do client, now, timer_id
-            return client > 0
+        result = 0
+        now = 2000
+        
+        while timer_count(wheel) > 0 && now <= 4000
+            expired = poll(wheel, now, 42) do client, now, timer_id
+                return client > 0
+            end
+            result += expired
+            now += TimerWheels.tick_resolution(wheel)
         end
+        
         @test result == 1
         @test timer_count(wheel) == 0
         
@@ -41,9 +57,16 @@
         timer_id2 = schedule_timer!(wheel2, 4000)
         
         test_client = TestClient("test", Int64[])
-        result2 = poll(wheel2, 4500, test_client) do client, now, timer_id
-            push!(client.results, timer_id)
-            return client.value == "test"
+        result2 = 0
+        now = 3000
+        
+        while timer_count(wheel2) > 0 && now <= 5000
+            expired = poll(wheel2, now, test_client) do client, now, timer_id
+                push!(client.results, timer_id)
+                return client.value == "test"
+            end
+            result2 += expired
+            now += TimerWheels.tick_resolution(wheel2)
         end
         
         @test result2 == 1
@@ -62,9 +85,17 @@
         @test timer_count(wheel) == 3
         
         # Callback that always returns true (continue processing)
-        count1 = poll(wheel, 5500, nothing) do client, now, timer_id
-            return true
+        count1 = 0
+        now = 4000
+        
+        while timer_count(wheel) > 0 && now <= 6000
+            expired = poll(wheel, now, nothing) do client, now, timer_id
+                return true
+            end
+            count1 += expired
+            now += TimerWheels.tick_resolution(wheel)
         end
+        
         @test count1 == 3
         @test timer_count(wheel) == 0
         
@@ -76,9 +107,16 @@
         @test timer_count(wheel) == 3
         
         processed = Int64[]
-        count2 = poll(wheel, 5500, processed) do client, now, timer_id
-            push!(client, timer_id)
-            return length(client) < 2  # Accept first timer, reject second
+        count2 = 0
+        now = 4000
+        
+        while length(processed) < 2 && now <= 6000
+            expired = poll(wheel, now, processed) do client, now, timer_id
+                push!(client, timer_id)
+                return length(client) < 2  # Accept first timer, reject second
+            end
+            count2 += expired
+            now += TimerWheels.tick_resolution(wheel)
         end
         
         @test count2 == 1  # Only 1 timer was successfully processed (2nd was rejected)
@@ -92,13 +130,27 @@
         end
         
         even_timers = Int64[]
-        count3 = poll(wheel, 5500, even_timers) do client, now, timer_id
-            if timer_id % 2 == 0
-                push!(client, timer_id)
-                return true
-            else
-                return false  # Reject odd timer IDs
+        count3 = 0
+        now = 4000
+        original_count = timer_count(wheel)
+        
+        while now <= 6000
+            expired = poll(wheel, now, even_timers) do client, now, timer_id
+                if timer_id % 2 == 0
+                    push!(client, timer_id)
+                    return true
+                else
+                    return false  # Reject odd timer IDs
+                end
             end
+            count3 += expired
+            now += TimerWheels.tick_resolution(wheel)
+            
+            # Break if no more progress
+            if expired == 0 && timer_count(wheel) == original_count
+                break
+            end
+            original_count = timer_count(wheel)
         end
         
         # Should process until hitting first odd timer, then stop

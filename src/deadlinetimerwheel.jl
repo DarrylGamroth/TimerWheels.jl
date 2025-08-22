@@ -1,5 +1,5 @@
 export DeadlineTimerWheel, tick_resolution, ticks_per_wheel, start_time,
-    timer_count, reset_start_time!, current_tick_time, clear!,
+    timer_count, reset_start_time!, current_tick_time, current_tick_time!, clear!,
     deadline, schedule_timer!, cancel_timer!, poll
 
 """
@@ -191,6 +191,22 @@ Time of the current tick of the wheel in time units.
 current_tick_time(t::DeadlineTimerWheel) = ((t.current_tick + 1) << t.resolution_bits_to_shift) + t.start_time
 
 """
+    current_tick_time!(wheel::DeadlineTimerWheel, now::Int64)
+
+Set the current tick of the wheel to examine on the next poll.
+
+If the time passed in is less than the current time, nothing is changed.
+No timers will be expired when winding forward and thus are still in the wheel 
+and will be expired as encountered in the wheel during poll operations.
+
+# Arguments
+- `now`: Current time to advance to or stay at current time
+"""
+function current_tick_time!(t::DeadlineTimerWheel, now::Int64)
+    t.current_tick = max((now - t.start_time) >> t.resolution_bits_to_shift, t.current_tick)
+end
+
+"""
     clear!(wheel::DeadlineTimerWheel)
 
 Clear out all scheduled timers in the wheel.
@@ -260,19 +276,9 @@ end
 
 Poll for timers expired by the deadline passing.
 
-This implementation uses an incremental algorithm that processes timers slot-by-slot,
-maintaining state (`poll_index`) to resume exactly where it left off across poll calls.
-This ensures bounded execution time when using `expiry_limit`, making it suitable for
-real-time systems with strict timing requirements.
-
-**CRITICAL:** For correctness with timers that span multiple wheel rotations,
-**applications MUST poll frequently** - ideally at intervals ≤ `tick_resolution`.
-Large time jumps between polls (greater than `ticks_per_wheel * tick_resolution`)
-may cause some timers to be missed.
-
-**Real-Time Usage:** Use `expiry_limit` to bound the number of timers processed per
-poll call. The wheel will automatically resume from where it left off on the next
-poll, ensuring no timers are missed while maintaining predictable execution time.
+This implementation matches the Java Agrona DeadlineTimerWheel poll algorithm,
+processing only the current tick per poll call. It maintains incremental state
+using `poll_index` to track position within the current tick across poll calls.
 
 # Arguments
 - `callback`: Function to call for each expired timer with signature `(clientd, now, timer_id) -> Bool`
@@ -309,69 +315,43 @@ function poll(callback,
 
     timers_expired = 0
 
-    # Calculate the target tick based on current time
-    target_tick = (now - t.start_time) >> t.resolution_bits_to_shift
-
-    # Ensure we don't go backwards in time
-    target_tick = max(target_tick, t.current_tick)
-
-    # POLLING FREQUENCY CHECK: Detect if we're polling too slowly
-    # This check is important even with no timers - validates polling pattern
-    tick_jump = target_tick - t.current_tick
-    max_safe_jump = t.ticks_per_wheel
-
-    if tick_jump > max_safe_jump
-        @warn "Polling too slowly: jumped $tick_jump ticks (max safe: $max_safe_jump). " *
-              "Some timers may have been missed. Resetting to current time and continuing." *
-              " Poll more frequently to avoid this issue!"
-
-        # Automatic recovery: reset current_tick to target_tick and return 0
-        t.current_tick = target_tick
-        t.poll_index = 0
-        return 0
-    end
-
-    # Early exit if no timers to process
-    if t.timer_count <= 0
-        # Advance time but no timers to process
-        t.current_tick = target_tick
-        t.poll_index = 0
-        return 0
-    end
-
-    # REAL-TIME FRIENDLY ALGORITHM WITH poll_index
-    # Process timers incrementally, respecting expiry_limit for bounded execution time
-    while t.current_tick <= target_tick && timers_expired < expiry_limit
+    if t.timer_count > 0
         spoke_index = t.current_tick & t.tick_mask
 
-        # Resume processing from poll_index within the current tick
-        for slot_index in t.poll_index:t.tick_allocation-1
-            if timers_expired >= expiry_limit
-                # Hit expiry limit - save our position and return
-                t.poll_index = slot_index
-                return timers_expired
-            end
-
-            wheel_index = (spoke_index << t.allocation_bits_to_shift) + slot_index + 1
+        # Process slots in current tick starting from poll_index
+        i = 0
+        length = t.tick_allocation
+        while i < length && timers_expired < expiry_limit
+            wheel_index = (spoke_index << t.allocation_bits_to_shift) + t.poll_index + 1
             deadline = t.wheel[wheel_index]
 
-            if deadline != NULL_DEADLINE && now >= deadline
+            if now >= deadline
                 t.wheel[wheel_index] = NULL_DEADLINE
                 t.timer_count -= 1
                 timers_expired += 1
 
-                timer_id = timer_id_for_slot(spoke_index, slot_index)
+                timer_id = timer_id_for_slot(spoke_index, t.poll_index)
                 if !callback(clientd, now, timer_id)
                     # Callback rejected the timer expiry, restore it and stop processing
                     t.wheel[wheel_index] = deadline
                     t.timer_count += 1
-                    t.poll_index = slot_index + 1
                     return timers_expired - 1
                 end
             end
+
+            t.poll_index = (t.poll_index + 1) >= length ? 0 : (t.poll_index + 1)
+            i += 1
         end
 
-        # Finished processing all slots in current tick - advance to next tick
+        # Advance to next tick if we have room in expiry limit and time has passed
+        if timers_expired < expiry_limit && now >= current_tick_time(t)
+            t.current_tick += 1
+            t.poll_index = 0
+        elseif t.poll_index >= t.tick_allocation
+            t.poll_index = 0
+        end
+    elseif now >= current_tick_time(t)
+        # No timers but time has passed - advance tick
         t.current_tick += 1
         t.poll_index = 0
     end
