@@ -1,5 +1,6 @@
 using Test
 using TimerWheels
+using Printf
 
 # Consistent test parameters for better comparison
 const BENCHMARK_SIZE = 10_000
