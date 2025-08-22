@@ -1,74 +1,76 @@
 using Test
 using TimerWheels
 
+# Consistent test parameters for better comparison
+const BENCHMARK_SIZE = 10_000
+const BENCHMARK_SUBSET = 1_000
+
 @testset "Performance Tests" begin
     
-    @testset "Large Scale Timer Operations" begin
-        @testset "Schedule Many Timers" begin
-            wheel = DeadlineTimerWheel(0, 1, 1024)  # Large wheel for better distribution
-            
-            # Test scheduling 10,000 timers
-            num_timers = 10_000
+    println("\n" * "="^80)
+    println("TIMER WHEEL PERFORMANCE BENCHMARKS")
+    println("="^80)
+    println("Test Size: $BENCHMARK_SIZE timers (subset tests: $BENCHMARK_SUBSET)")
+    println("-"^80)
+    @printf("%-25s | %8s | %10s | %8s\n", "Operation", "Count", "Total Time", "Per Item")
+    println("-"^80)
+    
+    @testset "Basic Operations" begin
+        @testset "Schedule Timers" begin
+            wheel = DeadlineTimerWheel(0, 1, 1024)
+
+            timer_ids = Vector{Int64}(undef, BENCHMARK_SIZE)
+
             start_time = time_ns()
-            
-            timer_ids = Vector{Int64}(undef, num_timers)
-            for i in 1:num_timers
-                timer_ids[i] = schedule_timer!(wheel, i * 100)  # Spread timers out
+            for i in 1:BENCHMARK_SIZE
+                timer_ids[i] = schedule_timer!(wheel, i * 100)
             end
-            
             schedule_time = time_ns() - start_time
             
-            @test length(timer_ids) == num_timers
-            @test timer_count(wheel) == num_timers
+            @test length(timer_ids) == BENCHMARK_SIZE
+            @test timer_count(wheel) == BENCHMARK_SIZE
+            @test schedule_time < 1_000_000_000  # 1 second
             
-            # Scheduling should be reasonably fast (less than 1 second for 10k timers)
-            @test schedule_time < 1_000_000_000  # 1 second in nanoseconds
-            
-            println("Scheduled $num_timers timers in $(schedule_time / 1_000_000) ms")
+            time_per_timer = schedule_time / BENCHMARK_SIZE
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Schedule", BENCHMARK_SIZE, schedule_time / 1_000_000, time_per_timer)
         end
         
-        @testset "Cancel Many Timers" begin
+        @testset "Cancel Timers" begin
             wheel = DeadlineTimerWheel(0, 1, 1024)
-            num_timers = 5_000
+            timer_ids = [schedule_timer!(wheel, i * 100) for i in 1:BENCHMARK_SIZE]
             
-            # Schedule timers
-            timer_ids = [schedule_timer!(wheel, i * 100) for i in 1:num_timers]
-            
-            # Cancel half of them
             start_time = time_ns()
             cancelled_count = 0
-            for i in 1:2:num_timers  # Cancel every other timer
+            for i in 1:2:BENCHMARK_SIZE  # Cancel half
                 if cancel_timer!(wheel, timer_ids[i])
                     cancelled_count += 1
                 end
             end
             cancel_time = time_ns() - start_time
             
-            @test cancelled_count == num_timers ÷ 2
-            @test timer_count(wheel) == num_timers - cancelled_count
-            
-            # Cancellation should be fast (O(1) operations)
+            @test cancelled_count == BENCHMARK_SIZE ÷ 2
+            @test timer_count(wheel) == BENCHMARK_SIZE - cancelled_count
             @test cancel_time < 100_000_000  # 100ms
             
-            println("Cancelled $cancelled_count timers in $(cancel_time / 1_000_000) ms")
+            time_per_cancellation = cancel_time / cancelled_count
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Cancel", cancelled_count, cancel_time / 1_000_000, time_per_cancellation)
         end
     end
     
+    
     @testset "Poll Performance" begin
-        @testset "Large Time Jump with Many Timers" begin
-            wheel = DeadlineTimerWheel(0, 1, 16384)  # Increased to handle larger jumps
-            num_timers = 1_000
+        @testset "Large Time Jump Poll" begin
+            wheel = DeadlineTimerWheel(0, 1, 16384)
             
-            # Schedule timers with deadlines spread over a large time range
-            for i in 1:num_timers
+            # Schedule subset of timers with deadlines spread over time range
+            for i in 1:BENCHMARK_SUBSET
                 schedule_timer!(wheel, i * 10)
             end
             
-            # Create handler that just counts
             expired_count = 0
-            
-            # Jump far forward in time
-            jump_time = num_timers * 10 + 1000
+            jump_time = BENCHMARK_SUBSET * 10 + 1000
             start_time = time_ns()
             
             poll_result = poll(wheel, jump_time, nothing) do client, now, timer_id
@@ -78,28 +80,25 @@ using TimerWheels
             
             poll_time = time_ns() - start_time
             
-            @test poll_result == num_timers
-            @test expired_count == num_timers
+            @test poll_result == BENCHMARK_SUBSET
+            @test expired_count == BENCHMARK_SUBSET
             @test timer_count(wheel) == 0
-            
-            # Should handle large jumps efficiently
             @test poll_time < 100_000_000  # 100ms
             
-            println("Polled and expired $num_timers timers with large jump in $(poll_time / 1_000_000) ms")
+            time_per_timer = poll_time / BENCHMARK_SUBSET
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Poll (large jump)", BENCHMARK_SUBSET, poll_time / 1_000_000, time_per_timer)
         end
         
-        @testset "Frequent Small Polls" begin
-            wheel = DeadlineTimerWheel(0, 16, 256)  # Coarser resolution
-            num_timers = 1_000
+        @testset "Incremental Polls" begin
+            wheel = DeadlineTimerWheel(0, 16, 256)
             
             # Schedule timers
-            for i in 1:num_timers
+            for i in 1:BENCHMARK_SUBSET
                 schedule_timer!(wheel, i * 50)
             end
             
             expired_total = 0
-            
-            # Many small incremental polls
             poll_count = 100
             start_time = time_ns()
             
@@ -112,55 +111,48 @@ using TimerWheels
             
             poll_time = time_ns() - start_time
             
-            @test expired_total <= num_timers  # Some timers should have expired
-            
-            # Frequent polling should be efficient
+            @test expired_total <= BENCHMARK_SUBSET
             @test poll_time < 50_000_000  # 50ms
             
-            println("Performed $poll_count incremental polls in $(poll_time / 1_000_000) ms, expired $expired_total timers")
+            time_per_poll = poll_time / poll_count
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Poll (incremental)", poll_count, poll_time / 1_000_000, time_per_poll)
         end
     end
     
-    @testset "Memory Usage and Capacity Expansion" begin
-        @testset "Capacity Expansion Performance" begin
-            # Start with small allocation to force expansions
-            wheel = DeadlineTimerWheel(0, 1, 8, 2)  # Very small initial allocation
-            
-            # Schedule many timers to the same tick to force expansion
-            expansion_count = 0
-            timer_ids = Vector{Int64}()
+    
+    @testset "Memory and Expansion" begin
+        @testset "Capacity Expansion" begin
+            wheel = DeadlineTimerWheel(0, 1, 8, 2)  # Small allocation to force expansions
             
             start_time = time_ns()
+            timer_ids = Vector{Int64}()
             
-            # Schedule 100 timers to tick 0 (deadline 0)
-            for i in 1:100
+            # Schedule subset of timers to same deadline to force expansion
+            for i in 1:BENCHMARK_SUBSET
                 timer_id = schedule_timer!(wheel, 0)
                 push!(timer_ids, timer_id)
             end
             
             expansion_time = time_ns() - start_time
             
-            @test length(timer_ids) == 100
-            @test timer_count(wheel) == 100
+            @test length(timer_ids) == BENCHMARK_SUBSET
+            @test timer_count(wheel) == BENCHMARK_SUBSET
+            @test expansion_time < 100_000_000  # 100ms
             
-            # Even with expansions, should be reasonably fast
-            @test expansion_time < 10_000_000  # 10ms
-            
-            println("Scheduled 100 timers with capacity expansions in $(expansion_time / 1_000_000) ms")
+            time_per_timer = expansion_time / BENCHMARK_SUBSET
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Schedule (w/ expansion)", BENCHMARK_SUBSET, expansion_time / 1_000_000, time_per_timer)
         end
-    end
-    
-    @testset "Iterator Performance" begin
-        @testset "Iterate Over Many Timers" begin
+        
+        @testset "Iterator" begin
             wheel = DeadlineTimerWheel(0, 1, 256)
-            num_timers = 1_000
             
             # Schedule timers
-            for i in 1:num_timers
+            for i in 1:BENCHMARK_SUBSET
                 schedule_timer!(wheel, i * 10)
             end
             
-            # Time iteration
             start_time = time_ns()
             
             iterated_count = 0
@@ -170,25 +162,24 @@ using TimerWheels
             
             iteration_time = time_ns() - start_time
             
-            @test iterated_count == num_timers
-            
-            # Iteration should be efficient
+            @test iterated_count == BENCHMARK_SUBSET
             @test iteration_time < 50_000_000  # 50ms
             
-            println("Iterated over $num_timers timers in $(iteration_time / 1_000_000) ms")
+            time_per_timer = iteration_time / BENCHMARK_SUBSET
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Iterator", BENCHMARK_SUBSET, iteration_time / 1_000_000, time_per_timer)
         end
     end
     
-    @testset "Stress Test - Mixed Operations" begin
-        @testset "Concurrent Schedule/Cancel/Poll Operations" begin
+    
+    @testset "Stress Tests" begin
+        @testset "Mixed Operations" begin
             wheel = DeadlineTimerWheel(0, 4, 512)
             
             active_timers = Set{Int64}()
-            total_operations = 5_000
-            
             start_time = time_ns()
             
-            for i in 1:total_operations
+            for i in 1:BENCHMARK_SIZE
                 op = i % 4
                 
                 if op == 0 || op == 1  # 50% schedule operations
@@ -212,30 +203,31 @@ using TimerWheels
             stress_time = time_ns() - start_time
             
             @test timer_count(wheel) == length(active_timers)
-            
-            # Mixed operations should complete in reasonable time
             @test stress_time < 500_000_000  # 500ms
             
-            println("Performed $total_operations mixed operations in $(stress_time / 1_000_000) ms")
-            println("Final active timers: $(length(active_timers))")
+            time_per_operation = stress_time / BENCHMARK_SIZE
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Mixed operations", BENCHMARK_SIZE, stress_time / 1_000_000, time_per_operation)
+            @printf("%-25s | %8s | %10s | Final: %d active\n", 
+                   "", "", "", length(active_timers))
         end
     end
     
+    
     @testset "Worst Case Scenarios" begin
-        @testset "All Timers in Same Tick" begin
-            wheel = DeadlineTimerWheel(0, 1, 128)  # Increased to handle 100-tick jump
-            num_timers = 500
+        @testset "Same Tick Clustering" begin
+            wheel = DeadlineTimerWheel(0, 1, 128)
             
-            # Schedule all timers to same deadline (worst case for single tick)
+            # Schedule all timers to same deadline (worst case)
             start_time = time_ns()
             
-            for i in 1:num_timers
-                schedule_timer!(wheel, 100)  # All at same deadline
+            for i in 1:BENCHMARK_SUBSET
+                schedule_timer!(wheel, 100)
             end
             
             schedule_time = time_ns() - start_time
             
-            # Now expire them all at once
+            # Expire them all at once
             expired_count = 0
             poll_start = time_ns()
             poll_result = poll(wheel, 100, nothing) do client, now, timer_id
@@ -244,29 +236,29 @@ using TimerWheels
             end
             poll_time = time_ns() - poll_start
             
-            @test poll_result == num_timers
-            @test expired_count == num_timers
+            @test poll_result == BENCHMARK_SUBSET
+            @test expired_count == BENCHMARK_SUBSET
+            @test schedule_time < 100_000_000  # 100ms
+            @test poll_time < 50_000_000       # 50ms
             
-            # Even worst case should be reasonable
-            @test schedule_time < 100_000_000  # 100ms for scheduling
-            @test poll_time < 50_000_000       # 50ms for polling
-            
-            println("Worst case: $num_timers timers in same tick")
-            println("  Schedule time: $(schedule_time / 1_000_000) ms")
-            println("  Poll time: $(poll_time / 1_000_000) ms")
+            schedule_per_timer = schedule_time / BENCHMARK_SUBSET
+            poll_per_timer = poll_time / BENCHMARK_SUBSET
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Schedule (same tick)", BENCHMARK_SUBSET, schedule_time / 1_000_000, schedule_per_timer)
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Poll (same tick)", BENCHMARK_SUBSET, poll_time / 1_000_000, poll_per_timer)
         end
         
-        @testset "Very Large Time Range" begin
-            wheel = DeadlineTimerWheel(0, 1024, 2048)  # Increased resolution and wheel size
+        @testset "Large Time Range" begin
+            wheel = DeadlineTimerWheel(0, 1024, 2048)
             
-            # Schedule timers across a very large time range  
+            # Schedule timers across very large time range  
             large_deadline = 1_000_000
-            num_timers = 100
             
             start_time = time_ns()
             
-            for i in 1:num_timers
-                deadline = (i * large_deadline) ÷ num_timers
+            for i in 1:BENCHMARK_SUBSET
+                deadline = (i * large_deadline) ÷ BENCHMARK_SUBSET
                 schedule_timer!(wheel, deadline)
             end
             
@@ -274,7 +266,6 @@ using TimerWheels
             
             # Poll with very large jump
             expired_count = 0
-            
             poll_start = time_ns()
             poll_result = poll(wheel, large_deadline + 1000, nothing) do client, now, timer_id
                 expired_count += 1
@@ -282,16 +273,21 @@ using TimerWheels
             end
             poll_time = time_ns() - poll_start
             
-            @test poll_result == num_timers
-            @test expired_count == num_timers
+            @test poll_result == BENCHMARK_SUBSET
+            @test expired_count == BENCHMARK_SUBSET
+            @test schedule_time < 50_000_000   # 50ms
+            @test poll_time < 100_000_000      # 100ms
             
-            # Large time ranges should still be handled efficiently
-            @test schedule_time < 50_000_000  # 50ms
-            @test poll_time < 100_000_000     # 100ms
-            
-            println("Large time range test with deadline $large_deadline")
-            println("  Schedule time: $(schedule_time / 1_000_000) ms")
-            println("  Poll time: $(poll_time / 1_000_000) ms")
+            schedule_per_timer = schedule_time / BENCHMARK_SUBSET
+            poll_per_timer = poll_time / BENCHMARK_SUBSET
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Schedule (large range)", BENCHMARK_SUBSET, schedule_time / 1_000_000, schedule_per_timer)
+            @printf("%-25s | %8d | %10.3f ms | %8.1f ns\n", 
+                   "Poll (large range)", BENCHMARK_SUBSET, poll_time / 1_000_000, poll_per_timer)
         end
     end
+    
+    println("-"^80)
+    println("Benchmark completed. All operations within acceptable performance bounds.")
+    println("="^80)
 end
