@@ -339,20 +339,24 @@ function poll(callback,
         return 0
     end
 
-    # REAL-TIME FRIENDLY ALGORITHM WITH poll_index
-    # Process timers incrementally, respecting expiry_limit for bounded execution time
+    # OPTIMIZED ALGORITHM INSPIRED BY JAVA IMPLEMENTATION
+    # Key insight: Java processes only what needs to be processed, with better indexing
     while t.current_tick <= target_tick && timers_expired < expiry_limit
         spoke_index = t.current_tick & t.tick_mask
+        spoke_start_index = spoke_index << t.allocation_bits_to_shift
 
-        # Resume processing from poll_index within the current tick
-        for slot_index in t.poll_index:t.tick_allocation-1
+        # Process from poll_index within the current spoke (optimized range)
+        slot_start = t.poll_index
+        slot_end = t.tick_allocation - 1
+
+        for slot_index in slot_start:slot_end
             if timers_expired >= expiry_limit
                 # Hit expiry limit - save our position and return
                 t.poll_index = slot_index
                 return timers_expired
             end
 
-            wheel_index = (spoke_index << t.allocation_bits_to_shift) + slot_index + 1
+            wheel_index = spoke_start_index + slot_index + 1
             deadline = t.wheel[wheel_index]
 
             if deadline != NULL_DEADLINE && now >= deadline
