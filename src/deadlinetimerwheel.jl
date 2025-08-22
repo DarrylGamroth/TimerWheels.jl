@@ -1,6 +1,15 @@
-export DeadlineTimerWheel, tick_resolution, ticks_per_wheel, start_time,
-    timer_count, reset_start_time!, current_tick_time, clear!,
-    deadline, schedule_timer!, cancel_timer!, poll
+export DeadlineTimerWheel,
+    tick_resolution,
+    ticks_per_wheel,
+    start_time,
+    timer_count,
+    reset_start_time!,
+    current_tick_time,
+    clear!,
+    deadline,
+    schedule_timer!,
+    cancel_timer!,
+    poll
 
 """
 Represents a deadline not set in the wheel.
@@ -92,7 +101,8 @@ function DeadlineTimerWheel(
     start_time::Int64,
     tick_resolution::Int64,
     ticks_per_wheel::Integer,
-    initial_tick_allocation::Integer=INITIAL_TICK_ALLOCATION)
+    initial_tick_allocation::Integer = INITIAL_TICK_ALLOCATION,
+)
 
     check_ticks_per_wheel(ticks_per_wheel)
     check_resolution(tick_resolution)
@@ -116,7 +126,8 @@ function DeadlineTimerWheel(
         initial_tick_allocation,
         allocation_bits_to_shift,
         0,
-        wheel)
+        wheel,
+    )
 end
 
 """
@@ -188,7 +199,8 @@ Time of current tick of the wheel in time units.
 # Returns
 Time of the current tick of the wheel in time units.
 """
-current_tick_time(t::DeadlineTimerWheel) = ((t.current_tick + 1) << t.resolution_bits_to_shift) + t.start_time
+current_tick_time(t::DeadlineTimerWheel) =
+    ((t.current_tick + 1) << t.resolution_bits_to_shift) + t.start_time
 
 """
     clear!(wheel::DeadlineTimerWheel)
@@ -213,11 +225,12 @@ and returned for future reference.
 Timer ID assigned for the scheduled timer
 """
 function schedule_timer!(t::DeadlineTimerWheel, deadline)
-    deadline_tick = max((deadline - t.start_time) >> t.resolution_bits_to_shift, t.current_tick)
+    deadline_tick =
+        max((deadline - t.start_time) >> t.resolution_bits_to_shift, t.current_tick)
     spoke_index = deadline_tick & t.tick_mask
     tick_start_index = (spoke_index << t.allocation_bits_to_shift) + 1
 
-    for i in 0:t.tick_allocation-1
+    for i = 0:(t.tick_allocation-1)
         index = tick_start_index + i
         if t.wheel[index] == NULL_DEADLINE
             t.wheel[index] = deadline
@@ -301,11 +314,13 @@ count = poll(wheel, now, expired_timers) do client, now, timer_id
 end
 ```
 """
-function poll(callback,
+function poll(
+    callback,
     t::DeadlineTimerWheel,
     now::Int64,
-    clientd=nothing;
-    expiry_limit::Int64=typemax(Int64))
+    clientd = nothing;
+    expiry_limit::Int64 = typemax(Int64),
+)
 
     timers_expired = 0
 
@@ -345,7 +360,7 @@ function poll(callback,
         spoke_index = t.current_tick & t.tick_mask
 
         # Resume processing from poll_index within the current tick
-        for slot_index in t.poll_index:t.tick_allocation-1
+        for slot_index = t.poll_index:(t.tick_allocation-1)
             if timers_expired >= expiry_limit
                 # Hit expiry limit - save our position and return
                 t.poll_index = slot_index
@@ -422,16 +437,21 @@ function increase_capacity!(t::DeadlineTimerWheel, deadline, spoke_index)
     new_allocation_bits_to_shift = trailing_zeros(new_tick_allocation)
     new_capacity = t.ticks_per_wheel * new_tick_allocation
     if new_capacity > (typemax(typeof(t.tick_allocation)) + 1)
-        throw(ArgumentError("Maximum capacity reached at tick_allocation=$(t.tick_allocation)"))
+        throw(
+            ArgumentError(
+                "Maximum capacity reached at tick_allocation=$(t.tick_allocation)",
+            ),
+        )
     end
 
     new_wheel = Vector{Int64}(undef, t.ticks_per_wheel * new_tick_allocation)
     fill!(new_wheel, NULL_DEADLINE)
 
-    for i in 0:t.ticks_per_wheel-1
+    for i = 0:(t.ticks_per_wheel-1)
         old_tick_start_index = (i << t.allocation_bits_to_shift) + 1
         new_tick_start_index = (i << new_allocation_bits_to_shift) + 1
-        new_wheel[new_tick_start_index:new_tick_start_index+t.tick_allocation-1] .= t.wheel[old_tick_start_index:old_tick_start_index+t.tick_allocation-1]
+        new_wheel[new_tick_start_index:(new_tick_start_index+t.tick_allocation-1)] .=
+            t.wheel[old_tick_start_index:(old_tick_start_index+t.tick_allocation-1)]
     end
 
     new_wheel[(spoke_index<<new_allocation_bits_to_shift)+t.tick_allocation+1] = deadline
@@ -457,7 +477,8 @@ Generate a timer ID from wheel position coordinates.
 # Returns
 Unique timer ID encoding the position
 """
-timer_id_for_slot(tick_on_wheel, tick_array_index) = (Int64(tick_on_wheel) << 32) | (Int64(tick_array_index & 0xFFFFFFFF))
+timer_id_for_slot(tick_on_wheel, tick_array_index) =
+    (Int64(tick_on_wheel) << 32) | (Int64(tick_array_index & 0xFFFFFFFF))
 
 """
     tick_for_timer_id(timer_id) -> Int64
@@ -494,7 +515,8 @@ Validate that ticks per wheel is a power of 2.
 - `ArgumentError`: If ticks per wheel is not a power of 2
 """
 function check_ticks_per_wheel(ticks_per_wheel)
-    ispow2(ticks_per_wheel) || throw(ArgumentError("ticks per wheel must be a power of 2: $ticks_per_wheel"))
+    ispow2(ticks_per_wheel) ||
+        throw(ArgumentError("ticks per wheel must be a power of 2: $ticks_per_wheel"))
 end
 
 """
@@ -506,7 +528,8 @@ Validate that tick resolution is a power of 2.
 - `ArgumentError`: If tick resolution is not a power of 2
 """
 function check_resolution(tick_resolution)
-    ispow2(tick_resolution) || throw(ArgumentError("tick resolution must be a power of 2: $tick_resolution"))
+    ispow2(tick_resolution) ||
+        throw(ArgumentError("tick resolution must be a power of 2: $tick_resolution"))
 end
 
 """
@@ -518,7 +541,8 @@ Validate that initial tick allocation is a power of 2.
 - `ArgumentError`: If tick allocation is not a power of 2
 """
 function check_initial_tick_allocation(tick_allocation)
-    ispow2(tick_allocation) || throw(ArgumentError("tick allocation must be a power of 2: $tick_allocation"))
+    ispow2(tick_allocation) ||
+        throw(ArgumentError("tick allocation must be a power of 2: $tick_allocation"))
 end
 
 """
@@ -538,7 +562,7 @@ for (deadline, timer_id) in wheel
 end
 ```
 """
-function Base.iterate(t::DeadlineTimerWheel, state=nothing)
+function Base.iterate(t::DeadlineTimerWheel, state = nothing)
     # Initial case: start from the beginning
     if state === nothing
         # Return nothing if no timers
@@ -560,7 +584,7 @@ function Base.iterate(t::DeadlineTimerWheel, state=nothing)
     end
 
     # Find next non-NULL_DEADLINE
-    for index in index_to_start:length(t.wheel)
+    for index = index_to_start:length(t.wheel)
         deadline = t.wheel[index]
         if deadline != NULL_DEADLINE
             i = index - 1
